@@ -15,6 +15,7 @@ from enum import Enum
 import threading
 import urllib.request
 import os
+import sys
 
 # MediaPipe imports - handle different versions
 try:
@@ -683,6 +684,7 @@ class Game:
         self.clock = pygame.time.Clock()
         self.state = GameState.TITLE
         self.running = True
+        self.title_image = None
 
         # Calculate maze positioning for center of screen
         self.cell_size = min(
@@ -705,7 +707,7 @@ class Game:
         self.keyboard_direction = Direction.NONE
 
         # Reconfiguration state
-        self.reconfigure_timer = 30  # 30 second timer
+        self.reconfigure_timer = 60  # 60 second timer
         self.reconfigure_last_tick = 0
         self.particles = []
         self.old_maze = None
@@ -739,6 +741,19 @@ class Game:
         self.view_3d_x = self.screen_width - self.view_3d_width - 20
         self.view_3d_y = self.screen_height - self.view_3d_height - 20
 
+        # Load title screen image
+        try:
+            image_path = os.path.join(os.path.dirname(__file__), "small-game.png")
+            if os.path.exists(image_path):
+                original_image = pygame.image.load(image_path)
+                # Scale to 50%
+                original_width, original_height = original_image.get_size()
+                new_width = original_width // 2
+                new_height = original_height // 2
+                self.title_image = pygame.transform.scale(original_image, (new_width, new_height))
+        except Exception as e:
+            print(f"Could not load title image: {e}")
+
     def _init_sounds(self):
         """Initialize all game sounds"""
         self.sounds = {
@@ -771,7 +786,7 @@ class Game:
         self.last_tick = time.time()
         self.level_score = 0
         self.bonus_awarded = False
-        self.reconfigure_timer = 30
+        self.reconfigure_timer = 60
         self.reconfigure_last_tick = time.time()
         self.particles = []
         self.cat_facing = Direction.RIGHT
@@ -931,7 +946,7 @@ class Game:
             self.maze = self.new_maze
             self.exits = self.new_exits
             self.particles = []
-            self.reconfigure_timer = 30
+            self.reconfigure_timer = 60
             self.reconfigure_last_tick = time.time()
             self.state = GameState.PLAYING
 
@@ -966,14 +981,27 @@ class Game:
 
     def _draw_title_screen(self):
         """Draw the title screen"""
+        # Draw title image on the left side if available
+        left_margin = 50
+        if self.title_image:
+            img_y = (self.screen_height - self.title_image.get_height()) // 2
+            self.screen.blit(self.title_image, (left_margin, img_y))
+            # Calculate text area to the right of the image with no overlap
+            text_start_x = left_margin + self.title_image.get_width() + 50
+            # Center text in the remaining space to the right
+            remaining_width = self.screen_width - text_start_x - 50
+            content_x = text_start_x + remaining_width // 2
+        else:
+            content_x = self.screen_width // 2
+
         # Title
         title1 = self.title_font.render("Small Game", True, CYAN)
-        title1_rect = title1.get_rect(center=(self.screen_width // 2, self.screen_height // 3))
+        title1_rect = title1.get_rect(center=(content_x, self.screen_height // 3))
         self.screen.blit(title1, title1_rect)
 
         # Subtitle
         subtitle = self.medium_font.render("written by Claude, designed by Daniel Goldenholz 2026", True, WHITE)
-        subtitle_rect = subtitle.get_rect(center=(self.screen_width // 2, self.screen_height // 3 + 60))
+        subtitle_rect = subtitle.get_rect(center=(content_x, self.screen_height // 3 + 60))
         self.screen.blit(subtitle, subtitle_rect)
 
         # Instructions
@@ -990,13 +1018,13 @@ class Game:
         y = self.screen_height // 2 + 50
         for line in instructions:
             text = self.small_font.render(line, True, GRAY)
-            text_rect = text.get_rect(center=(self.screen_width // 2, y))
+            text_rect = text.get_rect(center=(content_x, y))
             self.screen.blit(text, text_rect)
             y += 30
 
         # Draw a sample cat
         sample_cat = Cat(0, 0, 60)
-        sample_cat.draw(self.screen, self.screen_width // 2 - 30, self.screen_height // 2 - 80)
+        sample_cat.draw(self.screen, content_x - 30, self.screen_height // 2 - 80)
 
     def _draw_game(self):
         """Draw the main game"""
@@ -1521,8 +1549,99 @@ class Game:
             pygame.quit()
 
 
+def request_camera_permission():
+    """Request camera permission before pygame starts"""
+    print("=" * 60)
+    print("CAMERA PERMISSION REQUEST")
+    print("=" * 60)
+    print("Checking camera access...")
+    print("If prompted, please allow camera access for hand gesture controls.")
+    print("(You can still play with keyboard arrow keys if camera is unavailable)")
+    print("=" * 60)
+    print()
+
+    permission_granted = False
+    permission_denied = False
+
+    try:
+        # First attempt - this will trigger macOS permission dialog
+        print("Requesting camera access...")
+        test_cap = cv2.VideoCapture(0)
+
+        # Check if we can access immediately (permission already granted)
+        if test_cap.isOpened():
+            ret, frame = test_cap.read()
+            if ret and frame is not None:
+                permission_granted = True
+                print("✓ Camera access already granted!")
+                test_cap.release()
+                return permission_granted
+
+        test_cap.release()
+
+        # Permission dialog is showing - wait for user response
+        print("  Please respond to the system permission dialog...")
+        print("  (Or press Ctrl+C to skip and use keyboard controls)")
+
+        # Retry opening camera every second for up to 10 seconds
+        # If still failing after 10 seconds, assume permission was denied
+        max_attempts = 10
+        for attempt in range(1, max_attempts + 1):
+            time.sleep(1.0)
+            print(f"  Attempt {attempt}/{max_attempts}...")
+
+            # Try to open camera again
+            test_cap = cv2.VideoCapture(0)
+
+            if test_cap.isOpened():
+                # Try to read a frame
+                ret, frame = test_cap.read()
+                if ret and frame is not None:
+                    permission_granted = True
+                    print("✓ Camera access granted!")
+                    test_cap.release()
+                    break
+                else:
+                    # Camera opened but can't read - likely denied
+                    # Wait a bit more in case it's just slow
+                    if attempt >= 3:
+                        permission_denied = True
+                        print("✗ Camera permission appears to be denied.")
+                        print("  Continuing with keyboard controls only.")
+                        test_cap.release()
+                        break
+
+            test_cap.release()
+
+        if not permission_granted and not permission_denied:
+            print("✗ Could not access camera after multiple attempts.")
+            print("  Permission may have been denied or camera is unavailable.")
+            print("  Continuing with keyboard controls only.")
+
+    except KeyboardInterrupt:
+        print("\n✗ Skipped camera permission check.")
+        print("  Continuing with keyboard controls only.")
+        permission_granted = False
+    except Exception as e:
+        print(f"✗ Error accessing camera: {e}")
+        print("  Continuing with keyboard controls only.")
+        permission_granted = False
+
+    print()
+    time.sleep(0.5)  # Brief pause before starting game
+
+    return permission_granted
+
+
 def main():
     """Entry point"""
+    # Request camera permission BEFORE any pygame initialization
+    # With OPENCV_AVFOUNDATION_SKIP_AUTH=1, we handle permission ourselves
+    camera_available = request_camera_permission()
+
+    print("Starting game...")
+
+    # Now initialize Pygame in fullscreen and start the game
     game = Game()
     game.run()
 
